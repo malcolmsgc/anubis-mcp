@@ -66,6 +66,54 @@ defmodule Anubis.SSE.ParserTest do
     assert Enum.empty?(Parser.run(sse))
   end
 
+  describe "feed/2 incremental parsing" do
+    test "emits a whole event with no remainder" do
+      assert {[event], ""} = Parser.feed("", "data: hello\n\n")
+      assert event.data == "hello"
+    end
+
+    test "reassembles an event split across two feeds" do
+      assert {[], "data: hel"} = Parser.feed("", "data: hel")
+      assert {[event], ""} = Parser.feed("data: hel", "lo\n\n")
+      assert event.data == "hello"
+    end
+
+    test "reassembles when the CRLF terminator is split across chunks" do
+      assert {[first, second], ""} =
+               Parser.feed("data: x\r", "\n\r\ndata: y\r\n\r\n")
+
+      assert first.data == "x"
+      assert second.data == "y"
+    end
+
+    test "emits complete events and holds a trailing partial" do
+      assert {[event], "data: b"} = Parser.feed("", "data: a\n\ndata: b")
+      assert event.data == "a"
+
+      assert {[event_b], ""} = Parser.feed("data: b", "\n\n")
+      assert event_b.data == "b"
+    end
+
+    test "buffers everything when there is no terminator yet" do
+      assert {[], "data: partial"} = Parser.feed("", "data: partial")
+    end
+
+    test "reassembles multi-line data split across chunks" do
+      assert {[event], ""} = Parser.feed("data: first\ndata: sec", "ond\n\n")
+      assert event.data == "first\nsecond"
+    end
+
+    test "takes only the last terminator when several events arrive together" do
+      assert {[a, b], "data: c"} = Parser.feed("", "data: a\n\ndata: b\n\ndata: c")
+      assert a.data == "a"
+      assert b.data == "b"
+    end
+
+    test "does not crash on a bare terminator" do
+      assert {[], ""} = Parser.feed("", "\n\n")
+    end
+  end
+
   describe "handles MCP message event correctly" do
     test "handles MCP endpoint event correctly" do
       sse = "event: endpoint\r\ndata: /messages/?session_id=123\r\n\r\n"

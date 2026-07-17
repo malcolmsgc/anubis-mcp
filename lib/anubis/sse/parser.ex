@@ -3,6 +3,8 @@ defmodule Anubis.SSE.Parser do
 
   alias Anubis.SSE.Event
 
+  @event_delimiter ~r/\r?\n\r?\n/
+
   @doc """
   Parses a string containing one or more SSE events.
 
@@ -11,9 +13,39 @@ defmodule Anubis.SSE.Parser do
   """
   def run(sse_data) when is_binary(sse_data) do
     sse_data
-    |> String.split(~r/\r?\n\r?\n/, trim: true)
+    |> String.split(@event_delimiter, trim: true)
     |> Enum.map(&parse_event/1)
     |> Enum.reject(&(&1.data == ""))
+  end
+
+  @doc """
+  Incrementally parses an SSE byte stream.
+
+  Given a carry-over `buffer` and a new `chunk`, returns `{events, remainder}`
+  where `events` are the complete events now available and `remainder` is the
+  trailing partial event bytes to pass back on the next call. Chunk boundaries
+  are transport framing, not event boundaries, so an event whose bytes span two
+  chunks is reassembled rather than mis-parsed.
+  """
+  @spec feed(binary(), binary()) :: {[Event.t()], binary()}
+  def feed(buffer, chunk) when is_binary(buffer) and is_binary(chunk) do
+    combined = buffer <> chunk
+
+    case last_delimiter_end(combined) do
+      nil ->
+        {[], combined}
+
+      split_at ->
+        <<complete::binary-size(split_at), remainder::binary>> = combined
+        {run(complete), remainder}
+    end
+  end
+
+  defp last_delimiter_end(data) do
+    case Regex.scan(@event_delimiter, data, return: :index) do
+      [] -> nil
+      matches -> matches |> List.last() |> hd() |> then(fn {start, len} -> start + len end)
+    end
   end
 
   defp parse_event(event_block) do

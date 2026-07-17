@@ -262,6 +262,52 @@ defmodule Anubis.Transport.SSETest do
       SSE.shutdown(transport)
     end
 
+    test "reassembles a message event split across two stream chunks", %{bypass: bypass} do
+      server_url = "http://localhost:#{bypass.port}"
+      test_message = "split message data"
+
+      {:ok, stub_client} = StubClient.start_link()
+      StubClient.subscribe()
+
+      Bypass.expect(bypass, "GET", "/sse", fn conn ->
+        conn = Plug.Conn.put_resp_header(conn, "content-type", "text/event-stream")
+        conn = Plug.Conn.send_chunked(conn, 200)
+
+        {:ok, conn} =
+          Plug.Conn.chunk(conn, """
+          event: endpoint
+          data: /messages/123
+
+          """)
+
+        Process.sleep(50)
+
+        # Write a single message event as two chunks, splitting mid-event so the
+        # event bytes span a chunk boundary. A per-chunk parse mangles this; a
+        # buffering parse reassembles it.
+        {:ok, conn} = Plug.Conn.chunk(conn, "event: message\ndata: #{test_message}")
+        Process.sleep(50)
+        {:ok, conn} = Plug.Conn.chunk(conn, "\n\n")
+
+        conn
+      end)
+
+      {:ok, transport} =
+        SSE.start_link(
+          client: stub_client,
+          server: %{
+            base_url: server_url,
+            sse_path: "/sse"
+          },
+          transport_opts: @test_http_opts
+        )
+
+      assert_receive {:stub_client_response, ^test_message}, 1_000
+
+      StubClient.clear_messages()
+      SSE.shutdown(transport)
+    end
+
     test "handles server disconnection", %{bypass: bypass} do
       server_url = "http://localhost:#{bypass.port}"
 
